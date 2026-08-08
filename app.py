@@ -122,7 +122,8 @@ def upload_to_youtube(ch_id, audio_path):
         log(f"[{ch['name']}] 업로드 완료! 🎉", "ok")
         return True
     except Exception as e:
-        log(f"[{ch['name']}] 업로드 오류: {str(e)[:200]}", "err")
+        import traceback
+log(f"[{ch['name']}] 업로드 오류: {traceback.format_exc()}", "err")
         return False
 
 def run_pipeline(channel_ids, script=None):
