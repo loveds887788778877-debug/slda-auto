@@ -1,8 +1,8 @@
 """
-슬다 자동화 v10 - Railway 24시간 완전판
+슬다 자동화 v10 - Railway 환경변수 토큰 지원
 """
 
-import os, time, threading, pickle
+import os, time, threading, pickle, base64, tempfile
 from pathlib import Path
 from datetime import datetime
 from gtts import gTTS
@@ -11,18 +11,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 
-# ─── 경로 설정 (Railway/로컬 자동 감지) ──────────────────────
 IS_RAILWAY  = os.environ.get("RAILWAY_ENVIRONMENT") is not None
 BASE_DIR    = Path("/app") if IS_RAILWAY else Path(r"C:\Users\MYCOM\Desktop\제코자동화")
 OUTPUT_DIR  = Path("/tmp/output") if IS_RAILWAY else BASE_DIR / "output"
-TOKENS_DIR  = Path("/app/tokens") if IS_RAILWAY else BASE_DIR / "tokens"
-FFMPEG_EXE  = "ffmpeg" if IS_RAILWAY else str(BASE_DIR / "bin" / "ffmpeg.exe")
-BASE_VIDEO  = BASE_DIR / "base_video.mp4"
+TOKENS_DIR  = Path("/tmp/tokens") if IS_RAILWAY else BASE_DIR / "tokens"
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 TOKENS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── 채널 설정 ───────────────────────────────────────────────
 CHANNELS = {
     "ch01": {"name": "한줄의 린",   "category": "명언"},
     "ch02": {"name": "무드웨이브",  "category": "노래"},
@@ -53,9 +49,32 @@ def log(msg, level="info"):
         upload_log.pop(0)
     print(entry)
 
+def load_token_from_env(ch_id):
+    """환경변수에서 토큰 로드 (Railway용)"""
+    env_key = ch_id.upper()  # CH01, CH02...
+    token_b64 = os.environ.get(env_key)
+    if not token_b64:
+        return None
+    try:
+        token_path = TOKENS_DIR / f"token_{ch_id}.pickle"
+        with open(token_path, "wb") as f:
+            f.write(base64.b64decode(token_b64))
+        return token_path
+    except Exception as e:
+        log(f"[{ch_id}] 환경변수 토큰 로드 오류: {e}", "err")
+        return None
+
+def get_token_path(ch_id):
+    # Railway: 환경변수에서 로드
+    if IS_RAILWAY:
+        return load_token_from_env(ch_id)
+    # 로컬: 파일에서 로드
+    path = TOKENS_DIR / f"token_{ch_id}.pickle"
+    return path if path.exists() else None
+
 def get_youtube_service(ch_id):
-    token_path = TOKENS_DIR / f"token_{ch_id}.pickle"
-    if not token_path.exists():
+    token_path = get_token_path(ch_id)
+    if not token_path:
         log(f"[{ch_id}] 토큰 없음!", "err")
         return None
     try:
@@ -63,8 +82,6 @@ def get_youtube_service(ch_id):
             creds = pickle.load(f)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            with open(token_path, "wb") as f:
-                pickle.dump(creds, f)
         return build("youtube", "v3", credentials=creds)
     except Exception as e:
         log(f"[{ch_id}] 인증 오류: {e}", "err")
@@ -80,31 +97,7 @@ def make_voice(script, ch_id):
         log(f"[{ch_id}] 음성 오류: {e}", "err")
         return None
 
-def make_video(ch_id, audio_path):
-    if not BASE_VIDEO.exists():
-        log(f"base_video.mp4 없음!", "err")
-        return None
-    import subprocess
-    output_path = OUTPUT_DIR / f"{ch_id}_final.mp4"
-    cmd = [
-        FFMPEG_EXE, "-y",
-        "-i", str(BASE_VIDEO),
-        "-i", str(audio_path),
-        "-c:v", "libx264", "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-        str(output_path)
-    ]
-    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="ignore")
-    if result.returncode != 0 or not output_path.exists():
-        log(f"[{ch_id}] 영상 합성 실패", "warn")
-        return None
-    log(f"[{ch_id}] 영상 합성 완료", "ok")
-    return output_path
-
-def upload_to_youtube(ch_id, video_path):
+def upload_to_youtube(ch_id, audio_path):
     ch = CHANNELS[ch_id]
     youtube = get_youtube_service(ch_id)
     if not youtube:
@@ -120,7 +113,7 @@ def upload_to_youtube(ch_id, video_path):
         "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
     }
     try:
-        media = MediaFileUpload(str(video_path), mimetype="video/mp4", resumable=True)
+        media = MediaFileUpload(str(audio_path), mimetype="audio/mpeg", resumable=True)
         req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
         response = None
         log(f"[{ch['name']}] 업로드 중...", "info")
@@ -144,10 +137,7 @@ def run_pipeline(channel_ids, script=None):
             audio = make_voice(default_script, ch_id)
             if not audio:
                 results["fail"].append(ch_name); continue
-            video = make_video(ch_id, audio)
-            if not video:
-                results["fail"].append(ch_name); continue
-            ok = upload_to_youtube(ch_id, video)
+            ok = upload_to_youtube(ch_id, audio)
             (results["success"] if ok else results["fail"]).append(ch_name)
             time.sleep(3)
         except Exception as e:
@@ -159,7 +149,13 @@ def run_pipeline(channel_ids, script=None):
     log(f"🎉 완료 → 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
 
 def get_token_status():
-    return {ch_id: (TOKENS_DIR / f"token_{ch_id}.pickle").exists() for ch_id in CHANNELS}
+    status = {}
+    for ch_id in CHANNELS:
+        if IS_RAILWAY:
+            status[ch_id] = bool(os.environ.get(ch_id.upper()))
+        else:
+            status[ch_id] = (TOKENS_DIR / f"token_{ch_id}.pickle").exists()
+    return status
 
 app = Flask(__name__)
 
@@ -179,7 +175,7 @@ def run():
         return jsonify({"status": "busy", "msg": "이미 업로드 중!"})
     data = request.json
     threading.Thread(target=run_pipeline, args=(data.get("channels",[]), data.get("script","")), daemon=True).start()
-    return jsonify({"status": "ok", "msg": f"🚀 {len(data.get('channels',[]))}개 채널 시작!"})
+    return jsonify({"status": "ok", "msg": f"🚀 시작!"})
 
 @app.route("/logs")
 def get_logs():
