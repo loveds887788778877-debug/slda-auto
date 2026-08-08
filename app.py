@@ -1,8 +1,8 @@
 """
-슬다 자동화 v10 - Railway 환경변수 토큰 지원
+슬다 자동화 v10 - 오류 디버깅 버전
 """
 
-import os, time, threading, pickle, base64, tempfile
+import os, time, threading, pickle, base64, traceback
 from pathlib import Path
 from datetime import datetime
 from gtts import gTTS
@@ -12,9 +12,8 @@ from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 
 IS_RAILWAY  = os.environ.get("RAILWAY_ENVIRONMENT") is not None
-BASE_DIR    = Path("/app") if IS_RAILWAY else Path(r"C:\Users\MYCOM\Desktop\제코자동화")
-OUTPUT_DIR  = Path("/tmp/output") if IS_RAILWAY else BASE_DIR / "output"
-TOKENS_DIR  = Path("/tmp/tokens") if IS_RAILWAY else BASE_DIR / "tokens"
+OUTPUT_DIR  = Path("/tmp/output") if IS_RAILWAY else Path(r"C:\Users\MYCOM\Desktop\제코자동화\output")
+TOKENS_DIR  = Path("/tmp/tokens") if IS_RAILWAY else Path(r"C:\Users\MYCOM\Desktop\제코자동화\tokens")
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 TOKENS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,16 +41,14 @@ upload_stats = {"success": 0, "fail": 0, "running": False}
 
 def log(msg, level="info"):
     ts = datetime.now().strftime("%H:%M:%S")
-    icon = {"info":"ℹ️","ok":"✅","err":"❌","warn":"⚠️"}.get(level,"•")
-    entry = f"[{ts}] {icon} {msg}"
-    upload_log.append({"time":ts,"level":level,"msg":msg,"full":entry})
+    entry = {"time":ts,"level":level,"msg":msg,"full":f"[{ts}] {msg}"}
+    upload_log.append(entry)
     if len(upload_log) > 200:
         upload_log.pop(0)
-    print(entry)
+    print(f"[{ts}] [{level}] {msg}", flush=True)
 
 def load_token_from_env(ch_id):
-    """환경변수에서 토큰 로드 (Railway용)"""
-    env_key = ch_id.upper()  # CH01, CH02...
+    env_key = ch_id.upper()
     token_b64 = os.environ.get(env_key)
     if not token_b64:
         return None
@@ -61,14 +58,12 @@ def load_token_from_env(ch_id):
             f.write(base64.b64decode(token_b64))
         return token_path
     except Exception as e:
-        log(f"[{ch_id}] 환경변수 토큰 로드 오류: {e}", "err")
+        print(f"토큰 로드 오류 [{ch_id}]: {e}", flush=True)
         return None
 
 def get_token_path(ch_id):
-    # Railway: 환경변수에서 로드
     if IS_RAILWAY:
         return load_token_from_env(ch_id)
-    # 로컬: 파일에서 로드
     path = TOKENS_DIR / f"token_{ch_id}.pickle"
     return path if path.exists() else None
 
@@ -84,7 +79,9 @@ def get_youtube_service(ch_id):
             creds.refresh(Request())
         return build("youtube", "v3", credentials=creds)
     except Exception as e:
-        log(f"[{ch_id}] 인증 오류: {e}", "err")
+        err = traceback.format_exc()
+        print(f"인증 오류 [{ch_id}]:\n{err}", flush=True)
+        log(f"[{ch_id}] 인증 오류: {str(e)}", "err")
         return None
 
 def make_voice(script, ch_id):
@@ -119,11 +116,12 @@ def upload_to_youtube(ch_id, audio_path):
         log(f"[{ch['name']}] 업로드 중...", "info")
         while response is None:
             _, response = req.next_chunk()
-        log(f"[{ch['name']}] 업로드 완료! 🎉", "ok")
+        log(f"[{ch['name']}] 업로드 완료! 🎉 ID:{response.get('id')}", "ok")
         return True
     except Exception as e:
-        import traceback
-log(f"[{ch['name']}] 업로드 오류: {traceback.format_exc()}", "err")
+        err = traceback.format_exc()
+        print(f"업로드 오류 [{ch['name']}]:\n{err}", flush=True)
+        log(f"[{ch['name']}] 업로드 오류: {str(e)}", "err")
         return False
 
 def run_pipeline(channel_ids, script=None):
@@ -142,12 +140,14 @@ def run_pipeline(channel_ids, script=None):
             (results["success"] if ok else results["fail"]).append(ch_name)
             time.sleep(3)
         except Exception as e:
-            log(f"[{ch_name}] 오류: {e}", "err")
+            err = traceback.format_exc()
+            print(f"파이프라인 오류 [{ch_name}]:\n{err}", flush=True)
+            log(f"[{ch_name}] 오류: {str(e)}", "err")
             results["fail"].append(ch_name)
     upload_stats["success"] += len(results["success"])
     upload_stats["fail"]    += len(results["fail"])
     upload_stats["running"]  = False
-    log(f"🎉 완료 → 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
+    log(f"완료 → 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
 
 def get_token_status():
     status = {}
@@ -176,7 +176,7 @@ def run():
         return jsonify({"status": "busy", "msg": "이미 업로드 중!"})
     data = request.json
     threading.Thread(target=run_pipeline, args=(data.get("channels",[]), data.get("script","")), daemon=True).start()
-    return jsonify({"status": "ok", "msg": f"🚀 시작!"})
+    return jsonify({"status": "ok", "msg": "🚀 시작!"})
 
 @app.route("/logs")
 def get_logs():
