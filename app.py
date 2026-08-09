@@ -85,9 +85,19 @@ def make_voice(script, ch_id):
     except Exception as e:
         log(f"[{ch_id}] 음성 오류: {e}", "err")
         return None
-convert_audio_to_video("mood_wave.mp3", "bg.jpg", "mood_wave.mp4")
-upload_video_to_youtube(youtube, "mood_wave.mp4", "제목", "설명")
+
 # ─── 영상 합성 ────────────────────────────────────────────────
+# 1. 오디오 + 이미지를 MP4 영상으로 변환
+    convert_audio_to_video(audio_path, "bg.jpg", output_video_path)
+    
+    # 2. 유튜브 업로드 실행
+    upload_video_to_youtube(youtube, output_video_path, f"[{ch_id}] 무드웨이브", "자동 업로드된 영상입니다.")
+    
+    log(f"[{ch_id}] 영상 변환 및 업로드 완료", "info")
+except Exception as e:
+    log(f"[{ch_id}] 영상 처리 오류: {e}", "err")
+    return None
+
 def make_video(ch_id, audio_path):
     if not BASE_VIDEO.exists():
         log(f"base_video.mp4 없음! → {BASE_VIDEO}", "err")
