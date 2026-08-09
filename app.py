@@ -215,7 +215,24 @@ def get_token_status():
         token_path = TOKENS_DIR / f"token_{ch_id}.pickle"
         status[ch_id] = token_path.exists()
     return status
+ALL_CHANNELS = list(CHANNELS.keys())
 
+def auto_round(round_name):
+    if upload_stats["running"]:
+        return
+    log(f"🕐 [{round_name}] 자동 업로드 시작!", "ok")
+    threading.Thread(target=run_pipeline, args=(ALL_CHANNELS, ""), daemon=True).start()
+
+def setup_schedule():
+    schedule.every().day.at("09:00").do(auto_round, "🌅 아침")
+    schedule.every().day.at("13:00").do(auto_round, "☀️ 점심")
+    schedule.every().day.at("19:00").do(auto_round, "🌙 저녁")
+    def run_loop():
+        while True:
+            schedule.run_pending()
+            time.sleep(30)
+    threading.Thread(target=run_loop, daemon=True).start()
+    log("⏰ 아침09:00 점심13:00 저녁19:00 자동설정!", "ok")
 # ─── Flask 앱 ─────────────────────────────────────────────────
 app = Flask(__name__)
 
