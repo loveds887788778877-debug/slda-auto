@@ -1,9 +1,5 @@
 """
-슬다 자동화 v14.0 - YouTube 처리 중단 문제 해결
-핵심 수정:
-1. 색상 배경에 제목 텍스트 + 그라데이션 오버레이 추가 (단순 단색 거부 방지)
-2. Pexels 영상 재인코딩 안정화
-3. 영상 최소 15초 보장
+슬다 자동화 v14.1 - SyntaxError 완전 수정판
 """
 
 import os, time, threading, subprocess, pickle, schedule, random, json, re, requests
@@ -86,15 +82,16 @@ pipeline_status = {}
 
 def log(msg, level="info"):
     ts = datetime.now().strftime("%H:%M:%S")
-    icon = {"info":"ℹ️","ok":"✅","err":"❌","warn":"⚠️"}.get(level,"•")
+    icon = {"info":"i","ok":"OK","err":"ERR","warn":"WARN"}.get(level,"•")
     entry = f"[{ts}] {icon} {msg}"
     upload_log.append({"time":ts,"level":level,"msg":msg,"full":entry})
-    if len(upload_log) > 300: upload_log.pop(0)
+    if len(upload_log) > 300:
+        upload_log.pop(0)
     print(entry)
 
 def install_ffmpeg():
     try:
-        subprocess.run(["ffmpeg","-version"],capture_output=True,check=True)
+        subprocess.run(["ffmpeg","-version"], capture_output=True, check=True)
         log("ffmpeg 준비됨!", "ok")
     except:
         log("ffmpeg 설치 중...", "info")
@@ -107,48 +104,67 @@ def generate_content(ch_id):
     random_topic = random.choice(TOPICS.get(category, ["꿀팁"]))
     hook = random.choice(TITLE_HOOKS.get(category, ["꼭 봐야 할"]))
     try:
-        if not GEMINI_KEYS: raise Exception("키 없음")
+        if not GEMINI_KEYS:
+            raise Exception("키 없음")
         gemini_key = random.choice(GEMINI_KEYS)
-        prompt = f"""한국 유튜브 쇼츠 크리에이터로서 JSON만 출력하세요.
-채널:{ch['name']} 주제:{random_topic} 톤:{ch['tone']} 힌트:{hook}
-{{"title":"이모지+후킹문구 25자이내","script":"20초분량 자연스럽게","tags":"{category},{random_topic},쇼츠","description":"채널설명"}}"""
+        prompt = (
+            "한국 유튜브 쇼츠 크리에이터로서 JSON만 출력하세요.\n"
+            f"채널:{ch['name']} 주제:{random_topic} 톤:{ch['tone']} 힌트:{hook}\n"
+            '{"title":"이모지+후킹문구 25자이내","script":"20초분량 자연스럽게",'
+            f'"tags":"{category},{random_topic},쇼츠","description":"채널설명"}}'
+        )
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-        res = requests.post(url,json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"temperature":0.9,"maxOutputTokens":500}},timeout=30)
-        result = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        res = requests.post(
+            url,
+            json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"temperature":0.9,"maxOutputTokens":500}},
+            timeout=30
+        )
+        rjson = res.json()
+        if "candidates" not in rjson or not rjson["candidates"]:
+            raise Exception(f"응답없음:{rjson}")
+        result = rjson["candidates"][0]["content"]["parts"][0]["text"].strip()
         result = result.replace("```json","").replace("```","").strip()
         parsed = json.loads(result)
         log(f"[{ch['name']}] Gemini 제목: {parsed.get('title','')}", "ok")
         return parsed
     except Exception as e:
-        log(f"[{ch['name']}] Gemini 오류:{e} → 기본값", "warn")
+        log(f"[{ch['name']}] Gemini 오류:{e} 기본값사용", "warn")
         return {
-            "title": f"✨ {hook} {random_topic}",
-            "script": f"안녕하세요! {ch['name']}입니다! 오늘은 {random_topic} 꿀팁! 구독 좋아요 부탁드려요!",
+            "title": f"{hook} {random_topic}",
+            "script": f"안녕하세요! {ch['name']}입니다! 오늘은 {random_topic} 꿀팁을 알려드릴게요! 구독과 좋아요 부탁드려요!",
             "tags": f"{category},{random_topic},쇼츠",
             "description": f"{ch['name']} | {random_topic}"
         }
 
 def get_pexels_video(ch_id):
     ch = CHANNELS[ch_id]
-    if not PEXELS_KEY: return None
+    if not PEXELS_KEY:
+        return None
     try:
         headers = {"Authorization": PEXELS_KEY}
-        res = requests.get("https://api.pexels.com/videos/search", headers=headers,
-            params={"query": ch["pexels"], "per_page": 15, "page": random.randint(1,5),
-                    "orientation": "portrait"}, timeout=30)
+        res = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers=headers,
+            params={"query": ch["pexels"], "per_page": 15, "page": random.randint(1,5), "orientation": "portrait"},
+            timeout=30
+        )
         videos = res.json().get("videos", [])
-        if not videos: return None
+        if not videos:
+            return None
         video = random.choice(videos)
-        vfiles = sorted([f for f in video["video_files"] if f.get("height",0) <= 1920],
-                        key=lambda x: x.get("height",0), reverse=True)
-        if not vfiles: return None
+        vfiles = sorted(
+            [f for f in video["video_files"] if f.get("height",0) <= 1920],
+            key=lambda x: x.get("height",0), reverse=True
+        )
+        if not vfiles:
+            return None
         raw_path = OUTPUT_DIR / f"{ch_id}_raw.mp4"
         r = requests.get(vfiles[0]["link"], stream=True, timeout=90)
-        with open(raw_path,"wb") as f:
-            for chunk in r.iter_content(8192): f.write(chunk)
-        if raw_path.stat().st_size < 10000: return None
-
-        # 재인코딩으로 코덱 정규화
+        with open(raw_path, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+        if raw_path.stat().st_size < 10000:
+            return None
         conv_path = OUTPUT_DIR / f"{ch_id}_conv.mp4"
         conv_cmd = [
             FFMPEG_EXE, "-y", "-i", str(raw_path),
@@ -159,37 +175,39 @@ def get_pexels_video(ch_id):
         ]
         subprocess.run(conv_cmd, capture_output=True, timeout=120)
         if conv_path.exists() and conv_path.stat().st_size > 50000:
-            log(f"[{ch['name']}] Pexels 변환 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
+            log(f"[{ch['name']}] Pexels 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
             return conv_path
         return None
     except Exception as e:
         log(f"[{ch['name']}] Pexels 오류:{e}", "warn")
         return None
 
-def make_rich_background(ch_id, title, duration=30):
-    """
-   def make_rich_background(ch_id, title, duration=30):
+def make_rich_background(ch_id, duration=30):
     output_path = OUTPUT_DIR / f"{ch_id}_bg.mp4"
-    colors = ["0x1a1a2e","0x0f3460","0x533483","0x1b4332","0x03071e","0x10002b"]
+    colors = ["0x1a1a2e", "0x0f3460", "0x533483", "0x1b4332", "0x03071e", "0x10002b"]
     color = random.choice(colors)
+    vf = (
+        "drawbox=x=0:y=0:w=1080:h=6:color=white@0.4:t=fill,"
+        "drawbox=x=0:y=1914:w=1080:h=6:color=white@0.4:t=fill,"
+        "drawbox=x=0:y=900:w=1080:h=120:color=white@0.08:t=fill,"
+        "drawbox=x=40:y=920:w=1000:h=3:color=white@0.7:t=fill,"
+        "drawbox=x=40:y=1010:w=1000:h=3:color=white@0.7:t=fill,"
+        "drawbox=x=40:y=300:w=600:h=3:color=white@0.3:t=fill,"
+        "drawbox=x=40:y=1650:w=400:h=3:color=white@0.3:t=fill"
+    )
     cmd = [
-        FFMPEG_EXE, "-y", "-f", "lavfi",
+        FFMPEG_EXE, "-y",
+        "-f", "lavfi",
         "-i", f"color=c={color}:size=1080x1920:rate=30:duration={duration}",
-        "-vf", (
-            "drawbox=x=0:y=0:w=1080:h=6:color=white@0.4:t=fill,"
-            "drawbox=x=0:y=1914:w=1080:h=6:color=white@0.4:t=fill,"
-            "drawbox=x=0:y=900:w=1080:h=120:color=white@0.08:t=fill,"
-            "drawbox=x=40:y=920:w=1000:h=3:color=white@0.7:t=fill,"
-            "drawbox=x=40:y=1010:w=1000:h=3:color=white@0.7:t=fill,"
-            f"zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={duration*30}:s=1080x1920:fps=30"
-        ),
+        "-vf", vf,
         "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
-        "-r", "30", "-t", str(duration), str(output_path)
+        "-r", "30", "-t", str(duration),
+        str(output_path)
     ]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=90)
-        if output_path.exists() and output_path.stat().st_size > 50000:
-            log(f"[{ch_id}] 배경 완료! ({output_path.stat().st_size//1024}KB)", "ok")
+        subprocess.run(cmd, capture_output=True, timeout=60)
+        if output_path.exists() and output_path.stat().st_size > 10000:
+            log(f"[{ch_id}] 배경 생성 완료! ({output_path.stat().st_size//1024}KB)", "ok")
             return output_path
     except Exception as e:
         log(f"[{ch_id}] 배경 오류:{e}", "err")
@@ -199,45 +217,17 @@ def make_voice(script, ch_id):
     audio_path = OUTPUT_DIR / f"{ch_id}_voice.mp3"
     try:
         gTTS(text=script, lang="ko", slow=False).save(str(audio_path))
-        if audio_path.stat().st_size < 1000: return None
+        if audio_path.stat().st_size < 1000:
+            return None
         return audio_path
     except Exception as e:
         log(f"[{ch_id}] 음성 오류:{e}", "err")
         return None
 
 def make_video(ch_id, base_video, audio_path):
-    """영상 + 오디오 합성"""
     output_path = OUTPUT_DIR / f"{ch_id}_final.mp4"
-
-    # 오디오 길이 확인
-    try:
-        probe = subprocess.run(
-            ["ffprobe","-v","quiet","-print_format","json","-show_format",str(audio_path)],
-            capture_output=True, timeout=10
-        )
-        info = json.loads(probe.stdout)
-        audio_dur = float(info["format"].get("duration", 30))
-    except:
-        audio_dur = 30
-
-    # 영상이 오디오보다 짧으면 루프
-    vf_loop = ""
-    try:
-        probe2 = subprocess.run(
-            ["ffprobe","-v","quiet","-print_format","json","-show_format",str(base_video)],
-            capture_output=True, timeout=10
-        )
-        info2 = json.loads(probe2.stdout)
-        video_dur = float(info2["format"].get("duration", 30))
-        if video_dur < audio_dur:
-            vf_loop = "-stream_loop -1"  # 영상 무한 루프
-    except:
-        pass
-
-    cmd_parts = [FFMPEG_EXE, "-y"]
-    if vf_loop:
-        cmd_parts += ["-stream_loop", "-1"]
-    cmd_parts += [
+    cmd = [
+        FFMPEG_EXE, "-y",
         "-i", str(base_video),
         "-i", str(audio_path),
         "-c:v", "copy",
@@ -245,16 +235,12 @@ def make_video(ch_id, base_video, audio_path):
         "-shortest",
         str(output_path)
     ]
-
     try:
         log(f"[{ch_id}] 합성 중...", "info")
-        result = subprocess.run(cmd_parts, capture_output=True, timeout=120)
+        subprocess.run(cmd, capture_output=True, timeout=120)
         if output_path.exists() and output_path.stat().st_size > 50000:
             log(f"[{ch_id}] 합성 완료! ({output_path.stat().st_size//1024}KB)", "ok")
             return output_path
-
-        # copy 실패 시 재인코딩
-        log(f"[{ch_id}] copy 실패 → 재인코딩", "warn")
         cmd2 = [
             FFMPEG_EXE, "-y",
             "-i", str(base_video),
@@ -266,11 +252,9 @@ def make_video(ch_id, base_video, audio_path):
         ]
         subprocess.run(cmd2, capture_output=True, timeout=180)
         if output_path.exists() and output_path.stat().st_size > 50000:
-            log(f"[{ch_id}] 재인코딩 합성 완료!", "ok")
+            log(f"[{ch_id}] 재인코딩 완료!", "ok")
             return output_path
-
-        err = result.stderr.decode("utf-8", errors="ignore")[-200:]
-        log(f"[{ch_id}] 합성 실패: {err}", "err")
+        log(f"[{ch_id}] 합성 실패", "err")
         return None
     except subprocess.TimeoutExpired:
         log(f"[{ch_id}] 합성 타임아웃", "err")
@@ -289,11 +273,13 @@ def get_youtube_service(ch_id):
     for p in candidates:
         if p.exists():
             try:
-                with open(p,"rb") as f: creds = pickle.load(f)
+                with open(p, "rb") as f:
+                    creds = pickle.load(f)
                 if creds.expired and creds.refresh_token:
                     creds.refresh(Request())
-                    with open(p,"wb") as f: pickle.dump(creds,f)
-                return build("youtube","v3",credentials=creds)
+                    with open(p, "wb") as f:
+                        pickle.dump(creds, f)
+                return build("youtube", "v3", credentials=creds)
             except Exception as e:
                 log(f"[{ch_id}] 토큰 오류({p.name}):{e}", "warn")
     log(f"[{ch_id}] 토큰 없음!", "err")
@@ -305,27 +291,30 @@ def upload_youtube(ch_id, video_path, content):
         return False
     size = Path(video_path).stat().st_size
     if size < 50000:
-        log(f"[{ch_id}] 업로드 취소: 파일 너무 작음({size}B)", "err")
+        log(f"[{ch_id}] 업로드 취소: 너무 작음({size}B)", "err")
         return False
     ch = CHANNELS[ch_id]
     youtube = get_youtube_service(ch_id)
-    if not youtube: return False
+    if not youtube:
+        return False
     try:
         tags = [t.strip() for t in content.get("tags","").split(",")][:15]
         body = {
             "snippet": {
                 "title": content.get("title", f"{ch['name']} 쇼츠")[:100],
-                "description": content.get("description",""),
-                "tags": tags, "categoryId": "22"
+                "description": content.get("description", ""),
+                "tags": tags,
+                "categoryId": "22"
             },
-            "status": {"privacyStatus":"public","selfDeclaredMadeForKids":False}
+            "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
         }
         media = MediaFileUpload(str(video_path), mimetype="video/mp4", resumable=True)
         req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
         response = None
-        while response is None: _, response = req.next_chunk()
-        vid_id = response.get("id","")
-        log(f"[{ch['name']}] ✅ 업로드 완료! https://youtube.com/shorts/{vid_id}", "ok")
+        while response is None:
+            _, response = req.next_chunk()
+        vid_id = response.get("id", "")
+        log(f"[{ch['name']}] 업로드 완료! https://youtube.com/shorts/{vid_id}", "ok")
         pipeline_status[ch_id] = "완료"
         return True
     except Exception as e:
@@ -335,95 +324,107 @@ def upload_youtube(ch_id, video_path, content):
 
 def run_pipeline(channel_ids, script=None):
     upload_stats["running"] = True
-    results = {"success":[],"fail":[]}
-    for i,ch_id in enumerate(channel_ids,1):
-        if ch_id not in CHANNELS: continue
+    results = {"success": [], "fail": []}
+    for i, ch_id in enumerate(channel_ids, 1):
+        if ch_id not in CHANNELS:
+            continue
         ch = CHANNELS[ch_id]
         pipeline_status[ch_id] = "진행중"
-        log(f"━━ [{i}/{len(channel_ids)}] {ch['name']} 시작 ━━", "info")
+        log(f"[{i}/{len(channel_ids)}] {ch['name']} 시작", "info")
         try:
             content = generate_content(ch_id)
-            use_script = script if script else content.get("script","")
-
-            # Pexels 우선, 실패 시 리치 배경
+            use_script = script if script else content.get("script", "")
             base_video = get_pexels_video(ch_id)
             if not base_video:
-                log(f"[{ch['name']}] Pexels 없음 → 리치 배경 생성", "warn")
-                base_video = make_rich_background(ch_id, content.get("title","쇼츠"), duration=30)
+                log(f"[{ch['name']}] Pexels 없음 배경 생성", "warn")
+                base_video = make_rich_background(ch_id, duration=30)
             if not base_video:
                 log(f"[{ch['name']}] 영상 생성 실패!", "err")
-                results["fail"].append(ch["name"]); pipeline_status[ch_id]="실패"; continue
-
+                results["fail"].append(ch["name"])
+                pipeline_status[ch_id] = "실패"
+                continue
             audio = make_voice(use_script, ch_id)
             if not audio:
-                results["fail"].append(ch["name"]); pipeline_status[ch_id]="실패"; continue
-
+                results["fail"].append(ch["name"])
+                pipeline_status[ch_id] = "실패"
+                continue
             video = make_video(ch_id, base_video, audio)
             if not video:
-                results["fail"].append(ch["name"]); pipeline_status[ch_id]="실패"; continue
-
+                results["fail"].append(ch["name"])
+                pipeline_status[ch_id] = "실패"
+                continue
             ok = upload_youtube(ch_id, video, content)
-            (results["success"] if ok else results["fail"]).append(ch["name"])
-            time.sleep(random.randint(10,20))
+            if ok:
+                results["success"].append(ch["name"])
+            else:
+                results["fail"].append(ch["name"])
+            time.sleep(random.randint(10, 20))
         except Exception as e:
             log(f"[{ch['name']}] 오류:{e}", "err")
-            results["fail"].append(ch["name"]); pipeline_status[ch_id]="실패"
-
+            results["fail"].append(ch["name"])
+            pipeline_status[ch_id] = "실패"
     upload_stats["success"] += len(results["success"])
     upload_stats["fail"] += len(results["fail"])
     upload_stats["running"] = False
-    log(f"🎉 완료! 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
+    log(f"완료! 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
 
 ALL_CHANNELS = list(CHANNELS.keys())
 
 def auto_round(round_name):
-    if upload_stats["running"]: return
-    log(f"🕐 [{round_name}] 자동 시작!", "ok")
-    threading.Thread(target=run_pipeline, args=(ALL_CHANNELS,""), daemon=True).start()
+    if upload_stats["running"]:
+        return
+    log(f"{round_name} 자동 시작!", "ok")
+    threading.Thread(target=run_pipeline, args=(ALL_CHANNELS, ""), daemon=True).start()
 
 def setup_schedule():
-    schedule.every().day.at("09:00").do(auto_round,"🌅 아침")
-    schedule.every().day.at("13:00").do(auto_round,"☀️ 점심")
-    schedule.every().day.at("19:00").do(auto_round,"🌙 저녁")
+    schedule.every().day.at("09:00").do(auto_round, "아침")
+    schedule.every().day.at("13:00").do(auto_round, "점심")
+    schedule.every().day.at("19:00").do(auto_round, "저녁")
     def run_loop():
-        while True: schedule.run_pending(); time.sleep(30)
+        while True:
+            schedule.run_pending()
+            time.sleep(30)
     threading.Thread(target=run_loop, daemon=True).start()
-    log("⏰ 🌅09:00 ☀️13:00 🌙19:00 자동!", "ok")
+    log("09:00 13:00 19:00 자동 설정!", "ok")
 
 def get_token_status():
     result = {}
     for ch_id in CHANNELS:
         ch_num = ch_id[2:]
         result[ch_id] = any([
-            (TOKENS_DIR/f"ch{ch_num}_token.pickle").exists(),
-            (TOKENS_DIR/f"token_{ch_id}.pickle").exists(),
-            (TOKENS_DIR/f"{ch_id}_token.pickle").exists(),
+            (TOKENS_DIR / f"ch{ch_num}_token.pickle").exists(),
+            (TOKENS_DIR / f"token_{ch_id}.pickle").exists(),
+            (TOKENS_DIR / f"{ch_id}_token.pickle").exists(),
         ])
     return result
 
 app = Flask(__name__)
 
-HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}</style></head><body><h1>⚡ 슬다 자동화 v14</h1><p class="sub">YouTube처리거부 해결 · 그라데이션배경 · Pexels우선</p><div class="sched">자동: <span>🌅09:00</span> · <span>☀️13:00</span> · <span>🌙19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">🚀 지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='⏳ 업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='🚀 지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
+HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}</style></head><body><h1>슬다 자동화 v14.1</h1><p class="sub">SyntaxError 수정 완료 · 배경영상 개선 · Pexels 우선</p><div class="sched">자동: <span>09:00</span> · <span>13:00</span> · <span>19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
 
 @app.route("/")
-def dashboard(): return render_template_string(HTML, channels=CHANNELS)
+def dashboard():
+    return render_template_string(HTML, channels=CHANNELS)
 
 @app.route("/status")
-def status(): return jsonify({"tokens": get_token_status()})
+def status():
+    return jsonify({"tokens": get_token_status()})
 
 @app.route("/run", methods=["POST"])
 def run():
-    if upload_stats["running"]: return jsonify({"status":"busy","msg":"이미 실행중!"})
+    if upload_stats["running"]:
+        return jsonify({"status": "busy", "msg": "이미 실행중!"})
     data = flask_request.json
     threading.Thread(target=run_pipeline, args=(data.get("channels",[]), data.get("script","")), daemon=True).start()
-    return jsonify({"status":"ok","msg":f"🚀 {len(data.get('channels',[]))}개 시작!"})
+    return jsonify({"status": "ok", "msg": f"{len(data.get('channels',[]))}개 시작!"})
 
 @app.route("/logs")
-def get_logs(): return jsonify({"logs":upload_log[-100:],"stats":upload_stats,"pipeline":pipeline_status})
+def get_logs():
+    return jsonify({"logs": upload_log[-100:], "stats": upload_stats, "pipeline": pipeline_status})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    log("슬다 자동화 v14.0 시작 🚀", "ok")
+    log("슬다 자동화 v14.1 시작!", "ok")
     install_ffmpeg()
     setup_schedule()
     app.run(host="0.0.0.0", port=port, debug=False)
