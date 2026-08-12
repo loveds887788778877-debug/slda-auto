@@ -168,68 +168,31 @@ def get_pexels_video(ch_id):
 
 def make_rich_background(ch_id, title, duration=30):
     """
-    ✅ 핵심: 그라데이션 + 움직이는 원 + 텍스트 오버레이
-    단순 단색이 아닌 복잡한 영상 → YouTube 처리 거부 방지
-    """
+   def make_rich_background(ch_id, title, duration=30):
     output_path = OUTPUT_DIR / f"{ch_id}_bg.mp4"
-
-    # 채널별 색상 테마
-    themes = [
-        ("0x1a1a2e", "0x16213e", "0xe94560"),  # 네이비/레드
-        ("0x0f3460", "0x533483", "0xe94560"),  # 블루/퍼플
-        ("0x1b4332", "0x2d6a4f", "0x95d5b2"),  # 그린
-        ("0x03071e", "0x370617", "0xf48c06"),  # 다크/오렌지
-        ("0x10002b", "0x240046", "0xe0aaff"),  # 딥퍼플
-        ("0x012a4a", "0x013a63", "0x90e0ef"),  # 오션블루
-    ]
-    c1, c2, c3 = random.choice(themes)
-
-    # 안전한 제목 (특수문자 제거)
-    safe_title = re.sub(r'[^\w\s가-힣]', '', title)[:20]
-    if not safe_title: safe_title = "채널 소개"
-
-    # ✅ drawtext 없이 복잡한 패턴 영상 생성 (폰트 파일 의존성 제거)
-    vf = (
-        f"color=c={c1}:size=1080x1920:rate=30:duration={duration}[base];"
-        f"color=c={c2}:size=1080x1920:rate=30:duration={duration}[overlay];"
-        f"[base][overlay]blend=all_expr='A*(1-T/{duration})+B*(T/{duration})'[blended];"
-        f"[blended]"
-        f"drawbox=x=0:y=800:w=1080:h=320:color={c3}@0.15:t=fill,"
-        f"drawbox=x=40:y=840:w=1000:h=4:color={c3}@0.8:t=fill,"
-        f"drawbox=x=40:y=1060:w=1000:h=4:color={c3}@0.8:t=fill,"
-        f"drawbox=x=0:y=0:w=1080:h=200:color=black@0.3:t=fill,"
-        f"drawbox=x=0:y=1720:w=1080:h=200:color=black@0.3:t=fill"
-    )
-
+    colors = ["0x1a1a2e","0x0f3460","0x533483","0x1b4332","0x03071e","0x10002b"]
+    color = random.choice(colors)
     cmd = [
-        FFMPEG_EXE, "-y",
-        "-filter_complex", vf,
-        "-map", "[blended]",
+        FFMPEG_EXE, "-y", "-f", "lavfi",
+        "-i", f"color=c={color}:size=1080x1920:rate=30:duration={duration}",
+        "-vf", (
+            "drawbox=x=0:y=0:w=1080:h=6:color=white@0.4:t=fill,"
+            "drawbox=x=0:y=1914:w=1080:h=6:color=white@0.4:t=fill,"
+            "drawbox=x=0:y=900:w=1080:h=120:color=white@0.08:t=fill,"
+            "drawbox=x=40:y=920:w=1000:h=3:color=white@0.7:t=fill,"
+            "drawbox=x=40:y=1010:w=1000:h=3:color=white@0.7:t=fill,"
+            f"zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={duration*30}:s=1080x1920:fps=30"
+        ),
         "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
-        "-r", "30", "-t", str(duration),
-        str(output_path)
+        "-r", "30", "-t", str(duration), str(output_path)
     ]
-
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-        if output_path.exists() and output_path.stat().st_size > 10000:
-            log(f"[{ch_id}] 배경 영상 생성 완료 ({output_path.stat().st_size//1024}KB)", "ok")
-            return output_path
-        # 실패 시 초간단 버전으로 폴백
-        log(f"[{ch_id}] 복잡 배경 실패 → 단순 버전 시도", "warn")
-        cmd_simple = [
-            FFMPEG_EXE, "-y",
-            "-f", "lavfi",
-            "-i", f"color=c=0x1a1a2e:size=1080x1920:rate=30:duration={duration}",
-            "-vf", f"drawbox=x=0:y=900:w=1080:h=120:color=0xffffff@0.1:t=fill",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            str(output_path)
-        ]
-        subprocess.run(cmd_simple, capture_output=True, timeout=60)
-        if output_path.exists() and output_path.stat().st_size > 5000:
+        subprocess.run(cmd, capture_output=True, timeout=90)
+        if output_path.exists() and output_path.stat().st_size > 50000:
+            log(f"[{ch_id}] 배경 완료! ({output_path.stat().st_size//1024}KB)", "ok")
             return output_path
     except Exception as e:
-        log(f"[{ch_id}] 배경 생성 실패:{e}", "err")
+        log(f"[{ch_id}] 배경 오류:{e}", "err")
     return None
 
 def make_voice(script, ch_id):
