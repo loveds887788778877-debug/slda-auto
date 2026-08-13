@@ -1,5 +1,5 @@
 """
-슬다 자동화 v14.4 - Gemini 환경변수 수정 + make_rich_background Railway 호환 + 검은화면 방지
+슬다 자동화 v14.5 - Gemini 환경변수 수정 + make_rich_background Railway 호환 + 검은화면 방지
 """
 
 import os, time, threading, subprocess, pickle, schedule, random, json, re, requests
@@ -133,6 +133,36 @@ def install_ffmpeg():
         os.system("apt-get update -qq && apt-get install -y ffmpeg -qq")
         log("ffmpeg 설치 완료!", "ok")
 
+def test_gemini_key(key):
+    """Gemini 키 유효성 빠르게 테스트"""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={key}"
+        res = requests.post(
+            url,
+            json={"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":10}},
+            timeout=10
+        )
+        rj = res.json()
+        if "candidates" in rj:
+            return True
+        err = rj.get("error",{})
+        if err.get("status") in ["PERMISSION_DENIED","API_KEY_INVALID"]:
+            return False
+        return True  # 다른 오류는 일단 허용
+    except:
+        return True  # 네트워크 오류는 허용
+
+def get_valid_gemini_keys():
+    """시작시 유효한 키만 필터링"""
+    valid = []
+    for k in GEMINI_KEYS:
+        if test_gemini_key(k):
+            valid.append(k)
+            log(f"Gemini 키 OK: ...{k[-6:]}", "ok")
+        else:
+            log(f"Gemini 키 차단됨 제거: ...{k[-6:]}", "warn")
+    return valid if valid else GEMINI_KEYS  # 다 막히면 원본 사용
+
 def generate_content(ch_id):
     ch = CHANNELS[ch_id]
     category = ch["category"]
@@ -215,47 +245,69 @@ def get_pexels_video(ch_id):
             return None
         conv_path = OUTPUT_DIR / f"{ch_id}_conv.mp4"
 
-        # 1차 시도: 완전 재인코딩 (코덱 무관하게 처리)
-        conv_cmd = [
+        # 1차: 가로→세로 패딩 방식 (선 없음, 블러 배경)
+        conv_cmd1 = [
+            FFMPEG_EXE, "-y",
+            "-i", str(raw_path),
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p",
+            "-vf", (
+                "split[original][copy];"
+                "[copy]scale=1080:1920,gblur=sigma=30[blurred];"
+                "[original]scale=1080:1920:force_original_aspect_ratio=decrease[scaled];"
+                "[blurred][scaled]overlay=(W-w)/2:(H-h)/2"
+            ),
+            "-r", "30", "-t", "30",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(conv_path)
+        ]
+        r1 = subprocess.run(conv_cmd1, capture_output=True, timeout=180)
+        if r1.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
+            log(f"[{ch['name']}] Pexels 블러배경 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
+            return conv_path
+
+        # 2차: 단순 크롭 방식
+        log(f"[{ch['name']}] Pexels 1차 실패 → 2차(크롭) 시도", "warn")
+        conv_cmd2 = [
             FFMPEG_EXE, "-y",
             "-i", str(raw_path),
             "-c:v", "libx264", "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
             "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
             "-r", "30", "-t", "30",
-            "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
             str(conv_path)
         ]
-        result = subprocess.run(conv_cmd, capture_output=True, timeout=180)
-        if conv_path.exists() and conv_path.stat().st_size > 50000:
-            log(f"[{ch['name']}] Pexels 변환 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
+        r2 = subprocess.run(conv_cmd2, capture_output=True, timeout=180)
+        if r2.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
+            log(f"[{ch['name']}] Pexels 크롭 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
             return conv_path
 
-        # 2차 시도: 스케일 없이 단순 변환
-        log(f"[{ch['name']}] Pexels 1차 실패 → 2차 시도", "warn")
-        conv_cmd2 = [
+        # 3차: 최소 변환
+        log(f"[{ch['name']}] Pexels 2차 실패 → 3차(단순) 시도", "warn")
+        conv_cmd3 = [
             FFMPEG_EXE, "-y",
             "-i", str(raw_path),
             "-c:v", "libx264", "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
-            "-r", "30", "-t", "30",
             "-vf", "scale=1080:-2",
+            "-r", "30", "-t", "30",
             "-movflags", "+faststart",
             str(conv_path)
         ]
-        result2 = subprocess.run(conv_cmd2, capture_output=True, timeout=180)
-        if conv_path.exists() and conv_path.stat().st_size > 50000:
-            log(f"[{ch['name']}] Pexels 2차 변환 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
+        r3 = subprocess.run(conv_cmd3, capture_output=True, timeout=180)
+        if r3.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
+            log(f"[{ch['name']}] Pexels 단순변환 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
             return conv_path
 
-        # 3차 시도: raw 파일 그대로 사용 (변환 없이)
-        log(f"[{ch['name']}] Pexels 2차 실패 → raw 직접 사용", "warn")
+        # 4차: raw 직접 사용
+        log(f"[{ch['name']}] Pexels 변환 모두 실패 → raw 사용", "warn")
         if raw_path.exists() and raw_path.stat().st_size > 100000:
             log(f"[{ch['name']}] Pexels raw 직접 사용 ({raw_path.stat().st_size//1024}KB)", "ok")
             return raw_path
 
-        log(f"[{ch['name']}] Pexels 모든 변환 실패", "warn")
+        log(f"[{ch['name']}] Pexels 완전 실패", "warn")
         return None
     except Exception as e:
         log(f"[{ch['name']}] Pexels 오류:{e}", "warn")
@@ -367,15 +419,53 @@ def check_video_valid(video_path):
             return True, f"크기OK:{size//1024}KB"
         return False, f"검증실패:{e}"
 
+ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # 기본: Rachel
+
 def make_voice(script, ch_id):
     audio_path = OUTPUT_DIR / f"{ch_id}_voice.mp3"
+
+    # 1순위: ElevenLabs (자연스러운 음성)
+    if ELEVENLABS_KEY:
+        try:
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+            headers = {
+                "xi-api-key": ELEVENLABS_KEY,
+                "Content-Type": "application/json"
+            }
+            data = {
+                "text": script,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.8,
+                    "style": 0.3,
+                    "use_speaker_boost": True
+                }
+            }
+            res = requests.post(url, headers=headers, json=data, timeout=30)
+            if res.status_code == 200:
+                with open(audio_path, "wb") as f:
+                    f.write(res.content)
+                if audio_path.stat().st_size > 1000:
+                    log(f"[{ch_id}] ElevenLabs 음성 완료! ({audio_path.stat().st_size//1024}KB)", "ok")
+                    return audio_path
+            else:
+                log(f"[{ch_id}] ElevenLabs 오류:{res.status_code} → gTTS 폴백", "warn")
+        except Exception as e:
+            log(f"[{ch_id}] ElevenLabs 예외:{e} → gTTS 폴백", "warn")
+
+    # 2순위: gTTS (무료 폴백)
     try:
+        log(f"[{ch_id}] gTTS 음성 생성 중...", "info")
         gTTS(text=script, lang="ko", slow=False).save(str(audio_path))
         if audio_path.stat().st_size < 1000:
+            log(f"[{ch_id}] gTTS 파일 너무 작음", "err")
             return None
+        log(f"[{ch_id}] gTTS 음성 완료! ({audio_path.stat().st_size//1024}KB)", "ok")
         return audio_path
     except Exception as e:
-        log(f"[{ch_id}] 음성 오류:{e}", "err")
+        log(f"[{ch_id}] 음성 완전 실패:{e}", "err")
         return None
 
 def make_video(ch_id, base_video, audio_path):
@@ -562,7 +652,7 @@ def get_token_status():
 
 app = Flask(__name__)
 
-HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14.4</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.gemini-badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}.gemini-badge span{color:#4ade80}</style></head><body><h1>슬다 자동화 v14.4</h1><p class="sub">Gemini 단일키 지원 · 배경 3단계 폴백 · 업로드 검증</p><div class="gemini-badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span></div><div class="sched">자동: <span>09:00</span> · <span>13:00</span> · <span>19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
+HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14.5</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.gemini-badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}.gemini-badge span{color:#4ade80}</style></head><body><h1>슬다 자동화 v14.5</h1><p class="sub">Gemini 단일키 지원 · 배경 3단계 폴백 · 업로드 검증</p><div class="gemini-badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span> · 음성: <span id="ek">확인중...</span></div><div class="sched">자동: <span>09:00</span> · <span>13:00</span> · <span>19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';document.getElementById('ek').textContent=s.elevenlabs?'ElevenLabs':'gTTS';document.getElementById('ek').style.color=s.elevenlabs?'#4ade80':'#fbbf24';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
 
 @app.route("/")
 def dashboard():
@@ -573,7 +663,8 @@ def status():
     return jsonify({
         "tokens": get_token_status(),
         "gemini_count": len(GEMINI_KEYS),
-        "pexels": bool(PEXELS_KEY)
+        "pexels": bool(PEXELS_KEY),
+        "elevenlabs": bool(ELEVENLABS_KEY)
     })
 
 @app.route("/run", methods=["POST"])
@@ -590,7 +681,12 @@ def get_logs():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    log(f"슬다 자동화 v14.4 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
+    log(f"슬다 자동화 v14.5 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
     install_ffmpeg()
+    log("Gemini 키 검증 중...", "info")
+    valid_keys = get_valid_gemini_keys()
+    GEMINI_KEYS.clear()
+    GEMINI_KEYS.extend(valid_keys)
+    log(f"유효한 Gemini 키: {len(GEMINI_KEYS)}개", "ok")
     setup_schedule()
     app.run(host="0.0.0.0", port=port, debug=False)
