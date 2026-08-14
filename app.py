@@ -1,5 +1,5 @@
 """
-슬다 자동화 v14.6 - Gemini 환경변수 수정 + make_rich_background Railway 호환 + 검은화면 방지
+슬다 자동화 v14.9 - Gemini 환경변수 수정 + make_rich_background Railway 호환 + 검은화면 방지
 """
 
 import os, time, threading, subprocess, pickle, schedule, random, json, re, requests
@@ -37,6 +37,19 @@ if _single_key and _single_key not in GEMINI_KEYS:
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k.startswith("AIzaSy") or k.startswith("AQ.")]
 
 PEXELS_KEY  = os.environ.get("PEXELS_API_KEY", "")
+KLING_KEY   = os.environ.get("KLING_API_KEY", "")
+SLDA_IMAGE_URL = "https://raw.githubusercontent.com/Loveds8877887788877/SLDA-/main/slda.jpg"
+
+COUPANG_LINK = "https://partners.coupang.com/"
+TOSS_LINK = "https://sharelink.toss.im/links/best-ranking?signup=complete"
+NAVER_LINK = "https://brandconnect.naver.com/979331624407424/affiliate/products-link?persist=true"
+
+CHANNEL_LINKS = {
+    "ch06": f"추천 제품: {COUPANG_LINK} 토스혜택: {TOSS_LINK} 네이버쇼핑: {NAVER_LINK}",
+    "ch10": f"영화혜택: {TOSS_LINK} 추천상품: {COUPANG_LINK}",
+    "ch15": f"오늘의추천: {COUPANG_LINK} 토스혜택: {TOSS_LINK}",
+    "default": f"추천상품: {COUPANG_LINK} 토스혜택: {TOSS_LINK}",
+}
 
 CHANNELS = {
     "ch01": {"name": "한줄의 린",   "category": "명언",    "tone": "감성적이고 따뜻한",     "pexels": "motivation sunrise nature"},
@@ -200,6 +213,68 @@ def generate_content(ch_id):
             "tags": f"{category},{random_topic},쇼츠",
             "description": f"{ch['name']} | {random_topic}"
         }
+
+def get_kling_video(ch_id, script):
+    if not KLING_KEY:
+        return None
+    if ch_id not in ["ch06", "ch10", "ch15"]:
+        return None
+    try:
+        log(f"[{ch_id}] Kling AI 영상 생성 시작...", "info")
+        headers = {
+            "Authorization": f"Bearer {KLING_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "kling-v1",
+            "image_url": SLDA_IMAGE_URL,
+            "prompt": "A Korean woman talking naturally to camera, vertical video",
+            "duration": 5,
+            "aspect_ratio": "9:16"
+        }
+        res = requests.post(
+            "https://api.klingai.com/v1/videos/image2video",
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+        if res.status_code != 200:
+            log(f"[{ch_id}] Kling API 오류:{res.status_code} {res.text[:100]}", "warn")
+            return None
+        task_id = res.json().get("data", {}).get("task_id")
+        if not task_id:
+            log(f"[{ch_id}] Kling task_id 없음", "warn")
+            return None
+        log(f"[{ch_id}] Kling 작업중 task:{task_id}", "info")
+        for i in range(18):
+            time.sleep(10)
+            check = requests.get(
+                f"https://api.klingai.com/v1/videos/image2video/{task_id}",
+                headers=headers,
+                timeout=15
+            )
+            if check.status_code != 200:
+                continue
+            status = check.json().get("data", {}).get("task_status")
+            if status == "succeed":
+                video_url = check.json()["data"]["task_result"]["videos"][0]["url"]
+                kling_path = OUTPUT_DIR / f"{ch_id}_kling.mp4"
+                r = requests.get(video_url, stream=True, timeout=60)
+                with open(kling_path, "wb") as f:
+                    for chunk in r.iter_content(8192):
+                        f.write(chunk)
+                if kling_path.exists() and kling_path.stat().st_size > 50000:
+                    log(f"[{ch_id}] Kling 완료! ({kling_path.stat().st_size//1024}KB)", "ok")
+                    return kling_path
+            elif status == "failed":
+                log(f"[{ch_id}] Kling 실패", "warn")
+                return None
+            log(f"[{ch_id}] Kling 대기... {(i+1)*10}초", "info")
+        log(f"[{ch_id}] Kling 타임아웃", "warn")
+        return None
+    except Exception as e:
+        log(f"[{ch_id}] Kling 오류:{e}", "warn")
+        return None
 
 def get_pexels_video(ch_id):
     ch = CHANNELS[ch_id]
@@ -579,8 +654,14 @@ def run_pipeline(channel_ids, script=None):
             content = generate_content(ch_id)
             use_script = script if script else content.get("script", "")
 
-            # Pexels → 배경 순서
-            base_video = get_pexels_video(ch_id)
+            # 링크 자동 삽입
+            link = CHANNEL_LINKS.get(ch_id, CHANNEL_LINKS["default"])
+            content["description"] = content.get("description", "") + "\n\n" + link + "\n\n#shorts #쇼츠"
+
+            # Kling AI → Pexels → 배경 순서
+            base_video = get_kling_video(ch_id, use_script)
+            if not base_video:
+                base_video = get_pexels_video(ch_id)
             if not base_video:
                 log(f"[{ch['name']}] Pexels 없음 → 배경 생성", "warn")
                 base_video = make_rich_background(ch_id, duration=30)
@@ -620,24 +701,44 @@ def run_pipeline(channel_ids, script=None):
     upload_stats["running"] = False
     log(f"완료! 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
 
+# 자동 돌릴 12개 (무비착/픽앤리뷰/밈스토리 제외)
+AUTO_CHANNELS = [
+    "ch01",  # 한줄의 린 (명언)
+    "ch02",  # 무드웨이브 (노래)
+    "ch03",  # 피트노트 (운동)
+    "ch04",  # 딥슬립룸 (ASMR)
+    "ch05",  # 몽글클럽 (반려동물)
+    "ch07",  # 이슈타르 (이슈)
+    "ch08",  # 뷰티끄 (뷰티)
+    "ch09",  # 한끼스케치 (음식)
+    "ch11",  # 룩북노트 (패션)
+    "ch12",  # 드라마찜 (드라마)
+    "ch13",  # 트래블로그 (여행)
+    "ch14",  # 퀴즈는 (퀴즈)
+]
+
+# 잠시 중단 채널 3개
+PAUSED_CHANNELS = ["ch06", "ch10", "ch15"]  # 픽앤리뷰, 무비착, 밈스토리
+
 ALL_CHANNELS = list(CHANNELS.keys())
 
 def auto_round(round_name):
     if upload_stats["running"]:
         return
-    log(f"{round_name} 자동 시작!", "ok")
-    threading.Thread(target=run_pipeline, args=(ALL_CHANNELS, ""), daemon=True).start()
+    log(f"{round_name} 자동 시작! (12채널 - 픽앤리뷰/무비착/밈 제외)", "ok")
+    threading.Thread(target=run_pipeline, args=(AUTO_CHANNELS, ""), daemon=True).start()
 
 def setup_schedule():
     schedule.every().day.at("09:00").do(auto_round, "아침")
     schedule.every().day.at("13:00").do(auto_round, "점심")
     schedule.every().day.at("19:00").do(auto_round, "저녁")
+
     def run_loop():
         while True:
             schedule.run_pending()
             time.sleep(30)
     threading.Thread(target=run_loop, daemon=True).start()
-    log("09:00 13:00 19:00 자동 설정!", "ok")
+    log("자동 12채널: 09:00 13:00 19:00 / 픽앤리뷰·무비착·밈 잠시 중단!", "ok")
 
 def get_token_status():
     result = {}
@@ -652,7 +753,7 @@ def get_token_status():
 
 app = Flask(__name__)
 
-HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14.6</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.gemini-badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}.gemini-badge span{color:#4ade80}</style></head><body><h1>슬다 자동화 v14.6</h1><p class="sub">Gemini 단일키 지원 · 배경 3단계 폴백 · 업로드 검증</p><div class="gemini-badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span> · 음성: <span id="ek">확인중...</span></div><div class="sched">자동: <span>09:00</span> · <span>13:00</span> · <span>19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';document.getElementById('ek').textContent=s.elevenlabs?'ElevenLabs':'gTTS';document.getElementById('ek').style.color=s.elevenlabs?'#4ade80':'#fbbf24';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
+HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v14.9</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.gemini-badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}.gemini-badge span{color:#4ade80}</style></head><body><h1>슬다 자동화 v14.9</h1><p class="sub">Gemini 단일키 지원 · 배경 3단계 폴백 · 업로드 검증</p><div class="gemini-badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span> · 음성: <span id="ek">확인중...</span></div><div class="sched">자동 12채널: <span>09:00</span> · <span>13:00</span> · <span>19:00</span> (픽앤리뷰·무비착·밈 중단)</div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';document.getElementById('ek').textContent=s.elevenlabs?'ElevenLabs':'gTTS';document.getElementById('ek').style.color=s.elevenlabs?'#4ade80':'#fbbf24';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
 
 @app.route("/")
 def dashboard():
@@ -681,7 +782,7 @@ def get_logs():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    log(f"슬다 자동화 v14.6 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
+    log(f"슬다 자동화 v14.9 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
     install_ffmpeg()
     log("Gemini 키 검증 중...", "info")
     valid_keys = get_valid_gemini_keys()
