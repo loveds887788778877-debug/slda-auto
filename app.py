@@ -1,5 +1,5 @@
 """
-슬다 자동화 v15.3 - Gemini 환경변수 수정 + make_rich_background Railway 호환 + 검은화면 방지
+슬다 자동화 v15.4 - Gemini 1.5-flash + ElevenLabs flash_v2_5
 """
 
 import os, time, threading, subprocess, pickle, schedule, random, json, re, requests
@@ -19,7 +19,6 @@ FFMPEG_EXE = "ffmpeg"
 OUTPUT_DIR.mkdir(exist_ok=True)
 TOKENS_DIR.mkdir(exist_ok=True)
 
-# ✅ 수정1: 단일 키도 받고, 배열도 받도록
 _raw_keys = os.environ.get("GEMINI_API_KEYS", "[]")
 try:
     GEMINI_KEYS = json.loads(_raw_keys)
@@ -28,12 +27,10 @@ try:
 except:
     GEMINI_KEYS = []
 
-# 단일 키 환경변수도 지원
 _single_key = os.environ.get("GEMINI_API_KEY", "")
 if _single_key and _single_key not in GEMINI_KEYS:
     GEMINI_KEYS.append(_single_key)
 
-# AIzaSy 키만 필터링 (AQ. 형식의 aistudio 키도 허용)
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k.startswith("AIzaSy") or k.startswith("AQ.")]
 
 PEXELS_KEY  = os.environ.get("PEXELS_API_KEY", "")
@@ -105,23 +102,12 @@ TOPICS = {
     "밈": ["공감짤", "직장인", "학생", "연인", "현실공감"],
 }
 
-# 채널별 배경 색상 테마
 CHANNEL_COLORS = {
-    "ch01": "0x2C1B4E",
-    "ch02": "0x0D1B2A",
-    "ch03": "0x1A3A1A",
-    "ch04": "0x080820",
-    "ch05": "0x2E1A0E",
-    "ch06": "0x1A1A2E",
-    "ch07": "0x0E1117",
-    "ch08": "0x2C0A1E",
-    "ch09": "0x1A0A00",
-    "ch10": "0x0A0A1A",
-    "ch11": "0x1A0D00",
-    "ch12": "0x0A1628",
-    "ch13": "0x0A1A0A",
-    "ch14": "0x1A1A00",
-    "ch15": "0x1A0A0A",
+    "ch01": "0x2C1B4E", "ch02": "0x0D1B2A", "ch03": "0x1A3A1A",
+    "ch04": "0x080820", "ch05": "0x2E1A0E", "ch06": "0x1A1A2E",
+    "ch07": "0x0E1117", "ch08": "0x2C0A1E", "ch09": "0x1A0A00",
+    "ch10": "0x0A0A1A", "ch11": "0x1A0D00", "ch12": "0x0A1628",
+    "ch13": "0x0A1A0A", "ch14": "0x1A1A00", "ch15": "0x1A0A0A",
 }
 
 upload_log = []
@@ -147,9 +133,8 @@ def install_ffmpeg():
         log("ffmpeg 설치 완료!", "ok")
 
 def test_gemini_key(key):
-    """Gemini 키 유효성 빠르게 테스트"""
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
         res = requests.post(
             url,
             json={"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":10}},
@@ -161,12 +146,11 @@ def test_gemini_key(key):
         err = rj.get("error",{})
         if err.get("status") in ["PERMISSION_DENIED","API_KEY_INVALID"]:
             return False
-        return True  # 다른 오류는 일단 허용
+        return True
     except:
-        return True  # 네트워크 오류는 허용
+        return True
 
 def get_valid_gemini_keys():
-    """시작시 유효한 키만 필터링"""
     valid = []
     for k in GEMINI_KEYS:
         if test_gemini_key(k):
@@ -174,7 +158,7 @@ def get_valid_gemini_keys():
             log(f"Gemini 키 OK: ...{k[-6:]}", "ok")
         else:
             log(f"Gemini 키 차단됨 제거: ...{k[-6:]}", "warn")
-    return valid if valid else GEMINI_KEYS  # 다 막히면 원본 사용
+    return valid if valid else GEMINI_KEYS
 
 def generate_content(ch_id):
     ch = CHANNELS[ch_id]
@@ -191,7 +175,8 @@ def generate_content(ch_id):
             '{"title":"이모지+후킹문구 25자이내","script":"20초분량 자연스럽게",'
             f'"tags":"{category},{random_topic},쇼츠","description":"채널설명"}}'
         )
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={gemini_key}"
+        # ✅ 수정: gemini-1.5-flash (AIzaSy 키 완전 호환!)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
         res = requests.post(
             url,
             json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"temperature":0.9,"maxOutputTokens":500}},
@@ -221,8 +206,6 @@ def get_kling_video(ch_id, script):
         return None
     try:
         log(f"[{ch_id}] Kling AI 영상 생성 시작...", "info")
-
-        # 슬다 이미지 다운로드 후 base64 변환
         import base64
         img_res = requests.get(SLDA_IMAGE_URL, timeout=15)
         if img_res.status_code != 200:
@@ -230,7 +213,6 @@ def get_kling_video(ch_id, script):
             return None
         img_b64 = base64.b64encode(img_res.content).decode("utf-8")
         img_data_url = f"data:image/jpeg;base64,{img_b64}"
-
         headers = {
             "Authorization": f"Bearer {KLING_KEY}",
             "Content-Type": "application/json"
@@ -327,154 +309,57 @@ def get_pexels_video(ch_id):
         size = raw_path.stat().st_size
         log(f"[{ch['name']}] Pexels 다운로드:{size//1024}KB", "info")
         if size < 10000:
-            log(f"[{ch['name']}] Pexels 파일 너무 작음", "warn")
             return None
         conv_path = OUTPUT_DIR / f"{ch_id}_conv.mp4"
-
-        # 1차: 가로→세로 패딩 방식 (선 없음, 블러 배경)
         conv_cmd1 = [
-            FFMPEG_EXE, "-y",
-            "-i", str(raw_path),
-            "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            "-vf", (
-                "split[original][copy];"
-                "[copy]scale=1080:1920,gblur=sigma=30[blurred];"
-                "[original]scale=1080:1920:force_original_aspect_ratio=decrease[scaled];"
-                "[blurred][scaled]overlay=(W-w)/2:(H-h)/2"
-            ),
-            "-r", "30", "-t", "30",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
+            FFMPEG_EXE, "-y", "-i", str(raw_path),
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-vf", "split[original][copy];[copy]scale=1080:1920,gblur=sigma=30[blurred];[original]scale=1080:1920:force_original_aspect_ratio=decrease[scaled];[blurred][scaled]overlay=(W-w)/2:(H-h)/2",
+            "-r", "30", "-t", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             str(conv_path)
         ]
         r1 = subprocess.run(conv_cmd1, capture_output=True, timeout=180)
         if r1.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
             log(f"[{ch['name']}] Pexels 블러배경 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
             return conv_path
-
-        # 2차: 단순 크롭 방식
-        log(f"[{ch['name']}] Pexels 1차 실패 → 2차(크롭) 시도", "warn")
         conv_cmd2 = [
-            FFMPEG_EXE, "-y",
-            "-i", str(raw_path),
-            "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
+            FFMPEG_EXE, "-y", "-i", str(raw_path),
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-            "-r", "30", "-t", "30",
-            "-movflags", "+faststart",
-            str(conv_path)
+            "-r", "30", "-t", "30", "-movflags", "+faststart", str(conv_path)
         ]
         r2 = subprocess.run(conv_cmd2, capture_output=True, timeout=180)
         if r2.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
-            log(f"[{ch['name']}] Pexels 크롭 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
+            log(f"[{ch['name']}] Pexels 크롭 완료!", "ok")
             return conv_path
-
-        # 3차: 최소 변환
-        log(f"[{ch['name']}] Pexels 2차 실패 → 3차(단순) 시도", "warn")
-        conv_cmd3 = [
-            FFMPEG_EXE, "-y",
-            "-i", str(raw_path),
-            "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale=1080:-2",
-            "-r", "30", "-t", "30",
-            "-movflags", "+faststart",
-            str(conv_path)
-        ]
-        r3 = subprocess.run(conv_cmd3, capture_output=True, timeout=180)
-        if r3.returncode == 0 and conv_path.exists() and conv_path.stat().st_size > 50000:
-            log(f"[{ch['name']}] Pexels 단순변환 완료! ({conv_path.stat().st_size//1024}KB)", "ok")
-            return conv_path
-
-        # 4차: raw 직접 사용
-        log(f"[{ch['name']}] Pexels 변환 모두 실패 → raw 사용", "warn")
         if raw_path.exists() and raw_path.stat().st_size > 100000:
             log(f"[{ch['name']}] Pexels raw 직접 사용 ({raw_path.stat().st_size//1024}KB)", "ok")
             return raw_path
-
-        log(f"[{ch['name']}] Pexels 완전 실패", "warn")
         return None
     except Exception as e:
         log(f"[{ch['name']}] Pexels 오류:{e}", "warn")
         return None
 
-# ✅ 수정2: make_rich_background - Railway 완전 호환 (3단계 폴백)
 def make_rich_background(ch_id, duration=30):
-    """
-    Railway ffmpeg 완전 호환 버전
-    단계1: 단색(drawbox 없음) → 단계2: lavfi color → 단계3: 최소 배경
-    """
     output_path = OUTPUT_DIR / f"{ch_id}_bg.mp4"
     color = CHANNEL_COLORS.get(ch_id, "0x1a1a2e")
-
-    # ── 단계1: 가장 단순한 단색 배경 (drawbox 없음) ──
     cmd1 = [
-        FFMPEG_EXE, "-y",
-        "-f", "lavfi",
+        FFMPEG_EXE, "-y", "-f", "lavfi",
         "-i", f"color=c={color}:size=1080x1920:rate=30",
-        "-t", str(duration),
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-pix_fmt", "yuv420p",
+        "-t", str(duration), "-c:v", "libx264",
+        "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
         str(output_path)
     ]
     try:
         r = subprocess.run(cmd1, capture_output=True, timeout=60)
         if r.returncode == 0 and output_path.exists() and output_path.stat().st_size > 10000:
-            log(f"[{ch_id}] 배경(단색) 생성 완료 ({output_path.stat().st_size//1024}KB)", "ok")
-            return output_path
-        log(f"[{ch_id}] 단계1 실패 → 단계2 시도", "warn")
-    except Exception as e:
-        log(f"[{ch_id}] 단계1 예외:{e}", "warn")
-
-    # ── 단계2: testsrc2 (ffmpeg 내장 테스트 패턴) ──
-    try:
-        cmd2 = [
-            FFMPEG_EXE, "-y",
-            "-f", "lavfi",
-            "-i", f"testsrc2=size=1080x1920:rate=30",
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-pix_fmt", "yuv420p",
-            str(output_path)
-        ]
-        r2 = subprocess.run(cmd2, capture_output=True, timeout=60)
-        if r2.returncode == 0 and output_path.exists() and output_path.stat().st_size > 10000:
-            log(f"[{ch_id}] 배경(testsrc2) 생성 완료", "ok")
-            return output_path
-        log(f"[{ch_id}] 단계2 실패 → 단계3 시도", "warn")
-    except Exception as e:
-        log(f"[{ch_id}] 단계2 예외:{e}", "warn")
-
-    # ── 단계3: smptebars (가장 기본적인 ffmpeg 소스) ──
-    try:
-        cmd3 = [
-            FFMPEG_EXE, "-y",
-            "-f", "lavfi",
-            "-i", "smptebars=size=1080x1920:rate=30",
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            str(output_path)
-        ]
-        r3 = subprocess.run(cmd3, capture_output=True, timeout=60)
-        if r3.returncode == 0 and output_path.exists() and output_path.stat().st_size > 10000:
-            log(f"[{ch_id}] 배경(smptebars) 생성 완료", "ok")
+            log(f"[{ch_id}] 배경 생성 완료!", "ok")
             return output_path
     except Exception as e:
-        log(f"[{ch_id}] 단계3 예외:{e}", "warn")
-
-    log(f"[{ch_id}] 모든 배경 생성 실패", "err")
+        log(f"[{ch_id}] 배경 오류:{e}", "warn")
     return None
 
-# ✅ 수정3: 업로드 전 영상 유효성 검사
 def check_video_valid(video_path):
-    """검은화면/빈파일 업로드 완전 차단"""
     if not video_path:
         return False, "경로없음"
     p = Path(video_path)
@@ -482,15 +367,11 @@ def check_video_valid(video_path):
         return False, "파일없음"
     size = p.stat().st_size
     if size < 50000:
-        return False, f"크기부족:{size}B (최소50KB)"
-    # ffprobe로 영상 스트림 확인
+        return False, f"크기부족:{size}B"
     try:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error",
-             "-select_streams", "v:0",
-             "-show_entries", "stream=width,height",
-             "-of", "csv=p=0",
-             str(video_path)],
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video_path)],
             capture_output=True, text=True, timeout=10
         )
         out = probe.stdout.strip()
@@ -498,36 +379,26 @@ def check_video_valid(video_path):
             w, h = out.split(",")[:2]
             if int(w) > 0 and int(h) > 0:
                 return True, f"{w}x{h}"
-        return False, f"스트림없음(probe:{out})"
-    except Exception as e:
-        # ffprobe 없으면 크기로만 판단
+        return False, f"스트림없음"
+    except:
         if size > 50000:
             return True, f"크기OK:{size//1024}KB"
-        return False, f"검증실패:{e}"
+        return False, "검증실패"
 
 ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # 기본: Rachel
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
 def make_voice(script, ch_id):
     audio_path = OUTPUT_DIR / f"{ch_id}_voice.mp3"
-
-    # 1순위: ElevenLabs (자연스러운 음성)
+    # ✅ 수정: eleven_flash_v2_5 (무료 플랜 완전 호환!)
     if ELEVENLABS_KEY:
         try:
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
-            headers = {
-                "xi-api-key": ELEVENLABS_KEY,
-                "Content-Type": "application/json"
-            }
+            headers = {"xi-api-key": ELEVENLABS_KEY, "Content-Type": "application/json"}
             data = {
                 "text": script,
-                "model_id": "eleven_monolingual_v1",
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.8,
-                    "style": 0.3,
-                    "use_speaker_boost": True
-                }
+                "model_id": "eleven_flash_v2_5",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}
             }
             res = requests.post(url, headers=headers, json=data, timeout=30)
             if res.status_code == 200:
@@ -540,13 +411,10 @@ def make_voice(script, ch_id):
                 log(f"[{ch_id}] ElevenLabs 오류:{res.status_code} → gTTS 폴백", "warn")
         except Exception as e:
             log(f"[{ch_id}] ElevenLabs 예외:{e} → gTTS 폴백", "warn")
-
-    # 2순위: gTTS (무료 폴백)
     try:
         log(f"[{ch_id}] gTTS 음성 생성 중...", "info")
         gTTS(text=script, lang="ko", slow=False).save(str(audio_path))
         if audio_path.stat().st_size < 1000:
-            log(f"[{ch_id}] gTTS 파일 너무 작음", "err")
             return None
         log(f"[{ch_id}] gTTS 음성 완료! ({audio_path.stat().st_size//1024}KB)", "ok")
         return audio_path
@@ -556,39 +424,21 @@ def make_voice(script, ch_id):
 
 def make_video(ch_id, base_video, audio_path):
     output_path = OUTPUT_DIR / f"{ch_id}_final.mp4"
-    cmd = [
-        FFMPEG_EXE, "-y",
-        "-i", str(base_video),
-        "-i", str(audio_path),
-        "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        str(output_path)
-    ]
     try:
         log(f"[{ch_id}] 합성 중...", "info")
+        cmd = [FFMPEG_EXE, "-y", "-i", str(base_video), "-i", str(audio_path),
+               "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", str(output_path)]
         subprocess.run(cmd, capture_output=True, timeout=120)
         if output_path.exists() and output_path.stat().st_size > 50000:
             log(f"[{ch_id}] 합성 완료! ({output_path.stat().st_size//1024}KB)", "ok")
             return output_path
-        # 재인코딩 시도
-        cmd2 = [
-            FFMPEG_EXE, "-y",
-            "-i", str(base_video),
-            "-i", str(audio_path),
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-shortest",
-            str(output_path)
-        ]
+        cmd2 = [FFMPEG_EXE, "-y", "-i", str(base_video), "-i", str(audio_path),
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-shortest", str(output_path)]
         subprocess.run(cmd2, capture_output=True, timeout=180)
         if output_path.exists() and output_path.stat().st_size > 50000:
             log(f"[{ch_id}] 재인코딩 완료!", "ok")
             return output_path
-        log(f"[{ch_id}] 합성 실패", "err")
-        return None
-    except subprocess.TimeoutExpired:
-        log(f"[{ch_id}] 합성 타임아웃", "err")
         return None
     except Exception as e:
         log(f"[{ch_id}] 합성 오류:{e}", "err")
@@ -612,17 +462,15 @@ def get_youtube_service(ch_id):
                         pickle.dump(creds, f)
                 return build("youtube", "v3", credentials=creds)
             except Exception as e:
-                log(f"[{ch_id}] 토큰 오류({p.name}):{e}", "warn")
+                log(f"[{ch_id}] 토큰 오류:{e}", "warn")
     log(f"[{ch_id}] 토큰 없음!", "err")
     return None
 
 def upload_youtube(ch_id, video_path, content):
-    # ✅ 업로드 전 검증 (검은화면 차단)
     valid, info = check_video_valid(video_path)
     if not valid:
         log(f"[{ch_id}] 업로드 차단: {info}", "err")
         return False
-
     ch = CHANNELS[ch_id]
     youtube = get_youtube_service(ch_id)
     if not youtube:
@@ -664,92 +512,63 @@ def run_pipeline(channel_ids, script=None):
         try:
             content = generate_content(ch_id)
             use_script = script if script else content.get("script", "")
-
-            # 링크 자동 삽입
             link = CHANNEL_LINKS.get(ch_id, CHANNEL_LINKS["default"])
             content["description"] = content.get("description", "") + "\n\n" + link + "\n\n#shorts #쇼츠"
-
-            # Kling AI → Pexels → 배경 순서
             base_video = get_kling_video(ch_id, use_script)
             if not base_video:
                 base_video = get_pexels_video(ch_id)
             if not base_video:
-                log(f"[{ch['name']}] Pexels 없음 → 배경 생성", "warn")
                 base_video = make_rich_background(ch_id, duration=30)
-
             if not base_video:
                 log(f"[{ch['name']}] 영상 생성 완전 실패 → 스킵", "err")
                 results["fail"].append(ch["name"])
                 pipeline_status[ch_id] = "실패"
                 continue
-
             audio = make_voice(use_script, ch_id)
             if not audio:
                 results["fail"].append(ch["name"])
                 pipeline_status[ch_id] = "실패"
                 continue
-
             video = make_video(ch_id, base_video, audio)
             if not video:
                 results["fail"].append(ch["name"])
                 pipeline_status[ch_id] = "실패"
                 continue
-
             ok = upload_youtube(ch_id, video, content)
             if ok:
                 results["success"].append(ch["name"])
             else:
                 results["fail"].append(ch["name"])
-
             time.sleep(random.randint(10, 20))
         except Exception as e:
             log(f"[{ch['name']}] 오류:{e}", "err")
             results["fail"].append(ch["name"])
             pipeline_status[ch_id] = "실패"
-
     upload_stats["success"] += len(results["success"])
     upload_stats["fail"] += len(results["fail"])
     upload_stats["running"] = False
     log(f"완료! 성공:{len(results['success'])}개 실패:{len(results['fail'])}개", "ok")
 
-# 자동 돌릴 12개 (무비착/픽앤리뷰/밈스토리 제외)
-AUTO_CHANNELS = [
-    "ch01",  # 한줄의 린 (명언)
-    "ch02",  # 무드웨이브 (노래)
-    "ch03",  # 피트노트 (운동)
-    "ch04",  # 딥슬립룸 (ASMR)
-    "ch05",  # 몽글클럽 (반려동물)
-    "ch07",  # 이슈타르 (이슈)
-    "ch08",  # 뷰티끄 (뷰티)
-    "ch09",  # 한끼스케치 (음식)
-    "ch11",  # 룩북노트 (패션)
-    "ch12",  # 드라마찜 (드라마)
-    "ch13",  # 트래블로그 (여행)
-    "ch14",  # 퀴즈는 (퀴즈)
-]
-
-# 잠시 중단 채널 3개
-PAUSED_CHANNELS = ["ch06", "ch10", "ch15"]  # 픽앤리뷰, 무비착, 밈스토리
-
+AUTO_CHANNELS = ["ch01","ch02","ch03","ch04","ch05","ch07","ch08","ch09","ch11","ch12","ch13","ch14"]
+PAUSED_CHANNELS = ["ch06", "ch10", "ch15"]
 ALL_CHANNELS = list(CHANNELS.keys())
 
 def auto_round(round_name):
     if upload_stats["running"]:
         return
-    log(f"{round_name} 자동 시작! (12채널 - 픽앤리뷰/무비착/밈 제외)", "ok")
+    log(f"{round_name} 자동 시작! (12채널)", "ok")
     threading.Thread(target=run_pipeline, args=(AUTO_CHANNELS, ""), daemon=True).start()
 
 def setup_schedule():
     schedule.every().day.at("09:00").do(auto_round, "아침")
     schedule.every().day.at("13:00").do(auto_round, "점심")
     schedule.every().day.at("19:00").do(auto_round, "저녁")
-
     def run_loop():
         while True:
             schedule.run_pending()
             time.sleep(30)
     threading.Thread(target=run_loop, daemon=True).start()
-    log("자동 12채널: 09:00 13:00 19:00 / 픽앤리뷰·무비착·밈 잠시 중단!", "ok")
+    log("자동 12채널: 09:00 13:00 19:00!", "ok")
 
 def get_token_status():
     result = {}
@@ -764,7 +583,7 @@ def get_token_status():
 
 app = Flask(__name__)
 
-HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v15.3</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.gemini-badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}.gemini-badge span{color:#4ade80}</style></head><body><h1>슬다 자동화 v15.3</h1><p class="sub">Gemini 단일키 지원 · 배경 3단계 폴백 · 업로드 검증</p><div class="gemini-badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span> · 음성: <span id="ek">확인중...</span></div><div class="sched">자동 12채널: <span>09:00</span> · <span>13:00</span> · <span>19:00</span> (픽앤리뷰·무비착·밈 중단)</div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';document.getElementById('ek').textContent=s.elevenlabs?'ElevenLabs':'gTTS';document.getElementById('ek').style.color=s.elevenlabs?'#4ade80':'#fbbf24';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
+HTML = """<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>슬다 v15.4</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0b0f19;color:#f1f5f9;padding:14px;max-width:480px;margin:0 auto}h1{font-size:20px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}.sub{color:#475569;font-size:10px;margin-bottom:10px}.sched{background:#1e293b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px;text-align:center;color:#94a3b8}.sched span{color:#4ade80;font-weight:700}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#1e293b;border-radius:10px;padding:10px;text-align:center}.stat-n{font-size:22px;font-weight:800;color:#4ade80}.stat-n.e{color:#f87171}.stat-n.r{color:#fbbf24}.stat-l{font-size:9px;color:#64748b;margin-top:2px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}.card{background:#1e293b;border:1.5px solid #334155;border-radius:10px;padding:8px 4px;cursor:pointer;text-align:center}.card.sel{border-color:#3b82f6;background:#1e3a5f}.card.auth{border-left:3px solid #4ade80}.card.noauth{border-left:3px solid #f87171}.card.done{border-color:#4ade80!important;background:#052e16!important}.card.fail{border-color:#f87171!important;background:#2d0707!important}.card.running{border-color:#fbbf24!important}.cn{font-size:10px;font-weight:700}.cc{font-size:8px;color:#64748b}.br{display:flex;gap:7px;margin-bottom:10px}button{padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-size:12px;font-weight:700}.bb{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:15px;font-size:15px;border-radius:12px;width:100%;margin-bottom:10px}.bb:disabled{background:#334155;color:#64748b}.bg{background:#1e293b;color:#94a3b8;border:1px solid #334155}.lb{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px;height:220px;overflow-y:auto;font-family:monospace;font-size:10px;line-height:1.6}.lo{color:#4ade80}.le{color:#f87171}.lw{color:#fbbf24}.li{color:#64748b}.lbl{font-size:10px;color:#475569;margin-bottom:6px;font-weight:700}.badge{background:#1e293b;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-size:10px;color:#94a3b8;border:1px solid #334155}</style></head><body><h1>슬다 자동화 v15.4</h1><p class="sub">Gemini 1.5-flash · ElevenLabs flash · Kling AI · 링크 자동삽입</p><div class="badge">Gemini: <span id="gk">확인중...</span> · Pexels: <span id="pk">확인중...</span> · 음성: <span id="ek">확인중...</span></div><div class="sched">자동 12채널: <span>09:00</span> · <span>13:00</span> · <span>19:00</span></div><div class="stats"><div class="stat"><div class="stat-n" id="ss">0</div><div class="stat-l">성공</div></div><div class="stat"><div class="stat-n e" id="sf">0</div><div class="stat-l">실패</div></div><div class="stat"><div class="stat-n r" id="sr">대기</div><div class="stat-l">상태</div></div></div><div class="lbl">채널 선택</div><div class="grid" id="cg"></div><div class="br"><button class="bg" onclick="sa()" style="flex:1">전체선택</button><button class="bg" onclick="ca()" style="flex:1">전체해제</button></div><button class="bb" id="sb" onclick="go()">지금 바로 업로드!</button><div class="br"><button class="bg" onclick="document.getElementById('lb').innerHTML=''" style="width:100%">로그 초기화</button></div><div class="lbl">실행 로그</div><div class="lb" id="lb"><div class="li">대기 중...</div></div><script>const CH={{channels|tojson}};let sel=new Set(),tok={};function rg(){document.getElementById('cg').innerHTML=Object.entries(CH).map(([id,ch])=>`<div class="card ${tok[id]?'auth':'noauth'}" id="c${id}" onclick="tg('${id}')"><div class="cn">${ch.name}</div><div class="cc">${ch.category}</div></div>`).join('');}function tg(id){const el=document.getElementById('c'+id);sel.has(id)?(sel.delete(id),el.classList.remove('sel')):(sel.add(id),el.classList.add('sel'));}function sa(){Object.keys(CH).forEach(id=>{sel.add(id);document.getElementById('c'+id)?.classList.add('sel');});}function ca(){sel.forEach(id=>document.getElementById('c'+id)?.classList.remove('sel'));sel.clear();}function go(){if(!sel.size){alert('채널 선택!');return;}document.getElementById('sb').disabled=true;document.getElementById('sb').textContent='업로드 중...';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels:[...sel]})}).then(r=>r.json());}function pl(){fetch('/logs').then(r=>r.json()).then(d=>{const b=document.getElementById('lb');b.innerHTML=d.logs.map(l=>`<div class="l${l.level[0]}">${l.full}</div>`).join('')||'<div class="li">없음</div>';b.scrollTop=b.scrollHeight;document.getElementById('ss').textContent=d.stats.success;document.getElementById('sf').textContent=d.stats.fail;const r=document.getElementById('sr');r.textContent=d.stats.running?'실행중':'대기';r.style.color=d.stats.running?'#fbbf24':'#94a3b8';if(!d.stats.running){document.getElementById('sb').disabled=false;document.getElementById('sb').textContent='지금 바로 업로드!';}Object.entries(d.pipeline||{}).forEach(([id,st])=>{const c=document.getElementById('c'+id);if(!c)return;c.classList.remove('done','fail','running');if(st==='완료')c.classList.add('done');else if(st==='실패')c.classList.add('fail');else if(st==='진행중')c.classList.add('running');});});}function cs(){fetch('/status').then(r=>r.json()).then(s=>{tok=s.tokens;document.getElementById('gk').textContent=s.gemini_count+'개';document.getElementById('gk').style.color=s.gemini_count>0?'#4ade80':'#f87171';document.getElementById('pk').textContent=s.pexels?'연결됨':'없음';document.getElementById('pk').style.color=s.pexels?'#4ade80':'#f87171';document.getElementById('ek').textContent=s.elevenlabs?'ElevenLabs':'gTTS';document.getElementById('ek').style.color=s.elevenlabs?'#4ade80':'#fbbf24';rg();});}rg();cs();setInterval(pl,2000);setInterval(cs,15000);</script></body></html>"""
 
 @app.route("/")
 def dashboard():
@@ -772,12 +591,7 @@ def dashboard():
 
 @app.route("/status")
 def status():
-    return jsonify({
-        "tokens": get_token_status(),
-        "gemini_count": len(GEMINI_KEYS),
-        "pexels": bool(PEXELS_KEY),
-        "elevenlabs": bool(ELEVENLABS_KEY)
-    })
+    return jsonify({"tokens": get_token_status(), "gemini_count": len(GEMINI_KEYS), "pexels": bool(PEXELS_KEY), "elevenlabs": bool(ELEVENLABS_KEY)})
 
 @app.route("/run", methods=["POST"])
 def run():
@@ -793,7 +607,7 @@ def get_logs():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    log(f"슬다 자동화 v15.3 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
+    log(f"슬다 자동화 v15.4 시작! Gemini키:{len(GEMINI_KEYS)}개 Pexels:{'OK' if PEXELS_KEY else '없음'}", "ok")
     install_ffmpeg()
     log("Gemini 키 검증 중...", "info")
     valid_keys = get_valid_gemini_keys()
