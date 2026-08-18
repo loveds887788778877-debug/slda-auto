@@ -16,7 +16,14 @@ from flask import Flask, jsonify, render_template_string, request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    genai = None
+    GENAI_AVAILABLE = False
+    print("WARN google-generativeai 미설치 → Gemini 비활성화 (gTTS+기본대본 사용)")
+
 import tempfile, subprocess
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s', datefmt='%H:%M:%S')
@@ -54,6 +61,9 @@ GEMINI_INDEX = [0]
 
 def get_gemini_client():
     """키 순환하며 Gemini 클라이언트 반환"""
+    if not GENAI_AVAILABLE or not genai:
+        log.warning("WARN google-generativeai 패키지 없음 → 기본대본 사용")
+        return None
     if not GEMINI_KEYS:
         return None
     for attempt in range(len(GEMINI_KEYS)):
