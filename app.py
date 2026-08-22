@@ -161,16 +161,24 @@ def test_gemini_key(key):
         res = requests.post(
             url,
             json={"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":10}},
-            timeout=10
+            timeout=15
         )
         rj = res.json()
         if "candidates" in rj:
             return True
         err = rj.get("error",{})
-        if err.get("status") in ["PERMISSION_DENIED","API_KEY_INVALID"]:
+        err_status = err.get("status", "")
+        err_msg = str(err.get("message", ""))
+        log(f"Gemini 키 검증 응답: status={res.status_code} err={err_status} msg={err_msg[:100]}", "warn")
+        # 명확한 무효 판정일 때만 차단 (AQ. 신형 키는 오탐 방지 위해 관대하게)
+        if err_status == "API_KEY_INVALID" and "API key not valid" in err_msg:
             return False
+        if res.status_code == 400 and "API_KEY_INVALID" in str(rj):
+            return False
+        # 그 외(429 할당량, 403 권한, 타임아웃 등)는 일단 유효로 간주 - 실사용 때 재시도됨
         return True
-    except:
+    except Exception as e:
+        log(f"Gemini 키 검증 예외(네트워크): {e} → 일단 유효로 간주", "warn")
         return True
 
 def get_valid_gemini_keys():
