@@ -1,7 +1,0 @@
-flask
-requests
-google-api-python-client
-google-auth
-google-auth-oauthlib
-schedule
-gTTS
