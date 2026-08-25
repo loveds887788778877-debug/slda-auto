@@ -4,12 +4,16 @@
 
 import os, time, threading, subprocess, pickle, schedule, random, json, re, requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from gtts import gTTS
 from flask import Flask, jsonify, render_template_string, request as flask_request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
+
+KST = timezone(timedelta(hours=9))
+def now_kst():
+    return datetime.now(KST)
 
 BASE_DIR   = Path(os.environ.get("BASE_DIR", "/app"))
 OUTPUT_DIR = BASE_DIR / "output"
@@ -138,7 +142,7 @@ pipeline_status = {}
 expired_tokens = []  # 만료된 토큰 추적
 
 def log(msg, level="info"):
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts = now_kst().strftime("%H:%M:%S")
     icon = {"info":"i","ok":"OK","err":"ERR","warn":"WARN"}.get(level,"•")
     entry = f"[{ts}] {icon} {msg}"
     upload_log.append({"time":ts,"level":level,"msg":msg,"full":entry})
@@ -170,12 +174,10 @@ def test_gemini_key(key):
         err_status = err.get("status", "")
         err_msg = str(err.get("message", ""))
         log(f"Gemini 키 검증 응답: status={res.status_code} err={err_status} msg={err_msg[:100]}", "warn")
-        # 명확한 무효 판정일 때만 차단 (AQ. 신형 키는 오탐 방지 위해 관대하게)
         if err_status == "API_KEY_INVALID" and "API key not valid" in err_msg:
             return False
         if res.status_code == 400 and "API_KEY_INVALID" in str(rj):
             return False
-        # 그 외(429 할당량, 403 권한, 타임아웃 등)는 일단 유효로 간주 - 실사용 때 재시도됨
         return True
     except Exception as e:
         log(f"Gemini 키 검증 예외(네트워크): {e} → 일단 유효로 간주", "warn")
@@ -466,7 +468,6 @@ def get_youtube_service(ch_id):
             try:
                 with open(p, "rb") as f:
                     creds = pickle.load(f)
-                # ✅ 토큰 만료 시 자동 갱신
                 if creds.expired and creds.refresh_token:
                     log(f"[{ch_id}] 토큰 갱신 중...", "info")
                     creds.refresh(Request())
@@ -590,15 +591,17 @@ def auto_round(round_name):
     threading.Thread(target=run_pipeline, args=(AUTO_CHANNELS, ""), daemon=True).start()
 
 def setup_schedule():
-    schedule.every().day.at("09:00").do(auto_round, "아침")
-    schedule.every().day.at("13:00").do(auto_round, "점심")
-    schedule.every().day.at("19:00").do(auto_round, "저녁")
+    # ⚠️ Railway 서버는 UTC 시간 기준으로 동작 → 한국시간(KST=UTC+9)에 맞추려면 9시간 빼서 등록해야 함
+    # 한국시간 09:00 → UTC 00:00 / 한국시간 13:00 → UTC 04:00 / 한국시간 19:00 → UTC 10:00
+    schedule.every().day.at("00:00").do(auto_round, "아침(KST 09:00)")
+    schedule.every().day.at("04:00").do(auto_round, "점심(KST 13:00)")
+    schedule.every().day.at("10:00").do(auto_round, "저녁(KST 19:00)")
     def run_loop():
         while True:
             schedule.run_pending()
             time.sleep(30)
     threading.Thread(target=run_loop, daemon=True).start()
-    log("자동 12채널: 09:00 13:00 19:00!", "ok")
+    log("자동 12채널: 09:00 13:00 19:00 (한국시간)!", "ok")
 
 def get_token_status():
     result = {}
