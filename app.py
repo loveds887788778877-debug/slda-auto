@@ -174,10 +174,12 @@ def test_gemini_key(key):
         err_status = err.get("status", "")
         err_msg = str(err.get("message", ""))
         log(f"Gemini 키 검증 응답: status={res.status_code} err={err_status} msg={err_msg[:100]}", "warn")
+        # 명확한 무효 판정일 때만 차단 (AQ. 신형 키는 오탐 방지 위해 관대하게)
         if err_status == "API_KEY_INVALID" and "API key not valid" in err_msg:
             return False
         if res.status_code == 400 and "API_KEY_INVALID" in str(rj):
             return False
+        # 그 외(429 할당량, 403 권한, 타임아웃 등)는 일단 유효로 간주 - 실사용 때 재시도됨
         return True
     except Exception as e:
         log(f"Gemini 키 검증 예외(네트워크): {e} → 일단 유효로 간주", "warn")
@@ -468,6 +470,7 @@ def get_youtube_service(ch_id):
             try:
                 with open(p, "rb") as f:
                     creds = pickle.load(f)
+                # ✅ 토큰 만료 시 자동 갱신
                 if creds.expired and creds.refresh_token:
                     log(f"[{ch_id}] 토큰 갱신 중...", "info")
                     creds.refresh(Request())
@@ -601,7 +604,7 @@ def setup_schedule():
             schedule.run_pending()
             time.sleep(30)
     threading.Thread(target=run_loop, daemon=True).start()
-    log("자동 12채널: 09:00 13:00 19:00 (한국시간)!", "ok")
+    log("자동 12채널: 09:00 13:00 19:00 (한국시간 기준)!", "ok")
 
 def get_token_status():
     result = {}
